@@ -1,0 +1,143 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang \
+          llvm \
+          llvm-dev \
+          libclang-dev \
+          cmake \
+          build-essential \
+          python3 \
+          python3-pip
+        pip3 install chardet==3.0.4 tqdm==4.28.1 typing==3.7.4.1
+    
+    - name: Create build directory
+      run: mkdir -p CMakeBuild
+    
+    - name: Configure CMake
+      working-directory: CMakeBuild
+      run: |
+        cmake .. -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++" \
+          -DCMAKE_CXX_FLAGS="-static-libgcc -static-libstdc++"
+    
+    - name: Build
+      working-directory: CMakeBuild
+      run: make -j$(nproc)
+    
+    - name: Test binary
+      working-directory: CMakeBuild
+      run: |
+        ./avcleaner.bin --help
+        file avcleaner.bin
+        ldd avcleaner.bin || true
+    
+    - name: Create artifact directory
+      run: |
+        mkdir -p artifacts
+        cp CMakeBuild/avcleaner.bin artifacts/avcleaner-linux-x64
+        chmod +x artifacts/avcleaner-linux-x64
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: avcleaner-linux-x64
+        path: artifacts/avcleaner-linux-x64
+        retention-days: 30
+    
+    - name: Create checksum
+      if: startsWith(github.ref, 'refs/tags/')
+      working-directory: artifacts
+      run: |
+        sha256sum avcleaner-linux-x64 > avcleaner-linux-x64.sha256
+        cat avcleaner-linux-x64.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: avcleaner-linux-x64
+        path: artifacts
+    
+    - name: Create checksum
+      working-directory: artifacts
+      run: |
+        sha256sum avcleaner-linux-x64 > avcleaner-linux-x64.sha256
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/avcleaner-linux-x64
+          artifacts/avcleaner-linux-x64.sha256
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+        body: |
+          ## AVCleaner Release ${{ github.ref_name }}
+          
+          ### Binary Information
+          - **Platform**: Linux x64
+          - **Build Date**: ${{ github.event.head_commit.timestamp }}
+          - **Commit**: ${{ github.sha }}
+          
+          ### Installation
+          ```bash
+          # Download the binary
+          wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/avcleaner-linux-x64
+          
+          # Make it executable
+          chmod +x avcleaner-linux-x64
+          
+          # Run it
+          ./avcleaner-linux-x64 --help
+          ```
+          
+          ### Verify Checksum
+          ```bash
+          wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/avcleaner-linux-x64.sha256
+          sha256sum -c avcleaner-linux-x64.sha256
+          ```
+          
+          ### Usage
+          For simple programs:
+          ```bash
+          ./avcleaner-linux-x64 test/strings_simplest.c --strings=true --
+          ```
+          
+          See [README.md](https://github.com/${{ github.repository }}/blob/master/README.md) for more details.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
